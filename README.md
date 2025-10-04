@@ -1,4 +1,4 @@
-1️⃣ Image Pixel Cipher
+2 Image Pixel Cipher
 
 Description:
 A web-based tool to encrypt/decrypt images at the pixel level using HTML, CSS, and JavaScript. Supports operations like color inversion, pixel shuffling, channel swaps, and arithmetic transformations.
