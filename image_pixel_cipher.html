@@ -104,7 +104,7 @@
   </div>
 
 <script>
-/* Utilities: seeded RNG (mulberry32) and string -> int hash */
+
 function cyrb128(str) {
   let h1=1779033703, h2=3144134277, h3=1013904242, h4=2773480762;
   for (let i=0;i<str.length;i++){
@@ -130,7 +130,7 @@ function mulberry32(seed) {
   }
 }
 
-/* Canvas + image helpers */
+
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 let originalImage = null; // Image object
@@ -160,7 +160,7 @@ resetBtn.addEventListener('click', () => {
   updateMeta('reset');
 });
 
-/* load & draw */
+
 function loadImage(src) {
   const img = new Image();
   img.crossOrigin = 'anonymous';
@@ -187,7 +187,7 @@ function drawImage(img) {
   lastImageData = ctx.getImageData(0,0,w,h);
 }
 
-/* UI elements */
+
 const operationSel = document.getElementById('operation');
 const paramValue = document.getElementById('param_value');
 const paramSeed = document.getElementById('param_seed');
@@ -523,3 +523,4 @@ console.info('Image Pixel Cipher ready. Load an image, choose an operation, and 
 </script>
 </body>
 </html>
+
