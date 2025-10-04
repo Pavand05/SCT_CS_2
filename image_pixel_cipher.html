@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Image Pixel Cipher — Simple Image Encryption</title>
+<style>
+  :root{--bg:#0f1724;--card:#0b1220;--accent:#7c3aed;--muted:#94a3b8}
+  *{box-sizing:border-box}
+  body{margin:0; font-family:Inter,system-ui,Segoe UI,Roboto,Arial; background:linear-gradient(180deg,#071029,#071833); color:#e6eef8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px}
+  .app{width:100%; max-width:1100px; display:grid; grid-template-columns:430px 1fr; gap:18px}
+  .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:16px; border-radius:10px; border:1px solid rgba(255,255,255,0.03)}
+  h2{margin:0 0 8px 0}
+  label{font-size:13px; color:var(--muted); display:block; margin-top:10px}
+  input[type=file]{color:inherit}
+  select,input,button{width:100%; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.04); background:transparent; color:inherit}
+  .row{display:flex; gap:8px}
+  .row > *{flex:1}
+  button.primary{background:linear-gradient(90deg,var(--accent), #06b6d4); color:#021025; font-weight:700; border:0; cursor:pointer}
+  #canvasWrap{display:grid; place-items:center; background:rgba(255,255,255,0.01); padding:12px; border-radius:8px; min-height:120px}
+  canvas{max-width:100%; height:auto; border-radius:6px; background:#000}
+  .small{font-size:13px; color:var(--muted)}
+  .ops{margin-top:12px; display:grid; gap:8px}
+  .hint{font-size:12px; color:var(--muted); margin-top:6px}
+  @media(max-width:980px){.app{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h2>Image Pixel Cipher</h2>
+      <p class="small">Load an image, choose an operation and parameters, then Encrypt. Use the same parameters + Decrypt to reverse.</p>
+
+      <label>Load image</label>
+      <input id="fileInput" type="file" accept="image/*">
+
+      <div class="row" style="margin-top:10px">
+        <button id="loadExample" class="primary">Load Example</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+
+      <label style="margin-top:12px">Operation</label>
+      <select id="operation">
+        <option value="add">Add value to each channel (R/G/B)</option>
+        <option value="multiply">Multiply each channel</option>
+        <option value="xor">XOR each channel</option>
+        <option value="invert">Invert colors (same as XOR 255)</option>
+        <option value="swapChannels">Swap color channels (R↔G, etc.)</option>
+        <option value="shuffle">Shuffle pixels (permute positions) — needs seed</option>
+        <option value="swapRandomPairs">Swap random pixel pairs — needs seed & pairs</option>
+      </select>
+
+      <div id="params">
+        <label id="label_num">Value (add/multiply/xor)</label>
+        <input id="param_value" type="number" value="50">
+
+        <label id="label_seed">Seed (for shuffle / swap)</label>
+        <input id="param_seed" type="text" placeholder="enter seed (string or number)">
+
+        <label id="label_pairs" style="display:none">Pairs to swap (only for swapRandomPairs)</label>
+        <input id="param_pairs" type="number" min="1" max="1000000" value="500" style="display:none">
+
+        <label id="label_channelpair" style="display:none">Channel swap type</label>
+        <select id="param_channelpair" style="display:none">
+          <option value="RG">R &lt;-&gt; G</option>
+          <option value="RB">R &lt;-&gt; B</option>
+          <option value="GB">G &lt;-&gt; B</option>
+          <option value="RGC">rotate R→G→B</option>
+        </select>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <button id="encryptBtn" class="primary">Encrypt / Apply</button>
+        <button id="decryptBtn">Decrypt / Inverse</button>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="downloadBtn" class="primary">Download Processed Image</button>
+        <button id="exportParams">Export Params (JSON)</button>
+      </div>
+
+      <div style="margin-top:10px">
+        <label class="small">Params (paste JSON here to import):</label>
+        <textarea id="importJson" rows="3" style="width:100%; border-radius:8px; background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.03)"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="importBtn">Import Params</button>
+          <button id="applyImportedBtn">Apply Imported (Encrypt)</button>
+        </div>
+        <p class="hint">To decrypt later: save the JSON exported after encryption and use Decrypt with the same params.</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Preview</h2>
+      <div id="canvasWrap">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; align-items:center">
+        <div class="small">Width:</div><div id="metaW" class="small">—</div>
+        <div class="small">Height:</div><div id="metaH" class="small">—</div>
+        <div class="small">Mode:</div><div id="metaMode" class="small">—</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* Utilities: seeded RNG (mulberry32) and string -> int hash */
+function cyrb128(str) {
+  let h1=1779033703, h2=3144134277, h3=1013904242, h4=2773480762;
+  for (let i=0;i<str.length;i++){
+    let k = str.charCodeAt(i);
+    h1 = (h2 ^ Math.imul(h1 ^ k, 597399067)) >>> 0;
+    h2 = (h3 ^ Math.imul(h2 ^ k, 2869860233)) >>> 0;
+    h3 = (h4 ^ Math.imul(h3 ^ k, 951274213)) >>> 0;
+    h4 = (h1 ^ Math.imul(h4 ^ k, 2716044179)) >>> 0;
+  }
+  h1 = Math.imul(h3 ^ (h1>>>18), 597399067) >>> 0;
+  h2 = Math.imul(h4 ^ (h2>>>22), 2869860233) >>> 0;
+  h3 = Math.imul(h1 ^ (h3>>>17), 951274213) >>> 0;
+  h4 = Math.imul(h2 ^ (h4>>>19), 2716044179) >>> 0;
+  return (h1 ^ h2 ^ h3 ^ h4) >>> 0;
+}
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function() {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  }
+}
+
+/* Canvas + image helpers */
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let originalImage = null; // Image object
+let lastImageData = null;  // keep current processed data
+let currentMode = 'idle';
+
+const fileInput = document.getElementById('fileInput');
+const loadExample = document.getElementById('loadExample');
+const resetBtn = document.getElementById('resetBtn');
+
+fileInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  loadImage(url);
+});
+
+loadExample.addEventListener('click', () => {
+  // small default example image (data URL) or you can set a link
+  loadImage('https://picsum.photos/640/360');
+});
+
+resetBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  drawImage(originalImage);
+  lastImageData = ctx.getImageData(0,0,canvas.width,canvas.height);
+  updateMeta('reset');
+});
+
+/* load & draw */
+function loadImage(src) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    originalImage = img;
+    // Fit canvas to image (limit max width to 900)
+    const maxW = 900;
+    let w = img.width, h = img.height;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    lastImageData = ctx.getImageData(0,0,w,h);
+    updateMeta('loaded');
+  };
+  img.onerror = () => alert('Failed to load image (CORS or invalid). Try another image or use load example.');
+  img.src = src;
+}
+
+function drawImage(img) {
+  const w = canvas.width = img.width;
+  const h = canvas.height = img.height;
+  ctx.drawImage(img,0,0,w,h);
+  lastImageData = ctx.getImageData(0,0,w,h);
+}
+
+/* UI elements */
+const operationSel = document.getElementById('operation');
+const paramValue = document.getElementById('param_value');
+const paramSeed = document.getElementById('param_seed');
+const paramPairs = document.getElementById('param_pairs');
+const paramChannel = document.getElementById('param_channelpair');
+
+const label_pairs = document.getElementById('label_pairs');
+const label_channelpair = document.getElementById('label_channelpair');
+const label_seed = document.getElementById('label_seed');
+const label_num = document.getElementById('label_num');
+
+operationSel.addEventListener('change', onOpChange);
+onOpChange();
+
+function onOpChange() {
+  const op = operationSel.value;
+  // show/hide controls depending on op
+  if (op === 'add' || op === 'xor') {
+    label_num.style.display = 'block';
+    paramValue.style.display = 'block';
+  } else if (op === 'multiply') {
+    label_num.textContent = 'Multiplier (e.g., 1.2)';
+    label_num.style.display = 'block';
+    paramValue.style.display = 'block';
+  } else {
+    label_num.style.display = 'none';
+    paramValue.style.display = 'none';
+  }
+
+  if (op === 'shuffle') {
+    label_seed.style.display = 'block';
+    paramSeed.style.display = 'block';
+  } else if (op === 'swapRandomPairs') {
+    label_seed.style.display = 'block';
+    paramSeed.style.display = 'block';
+    label_pairs.style.display = 'block';
+    paramPairs.style.display = 'block';
+  } else {
+    label_seed.style.display = 'none';
+    paramSeed.style.display = 'none';
+    label_pairs.style.display = 'none';
+    paramPairs.style.display = 'none';
+  }
+
+  if (op === 'swapChannels') {
+    label_channelpair.style.display = 'block';
+    paramChannel.style.display = 'block';
+  } else {
+    label_channelpair.style.display = 'none';
+    paramChannel.style.display = 'none';
+  }
+
+  // reset label text default
+  label_num.textContent = 'Value (add/multiply/xor)';
+}
+
+/* Core pixel operations - all operate on ImageData and return new ImageData */
+
+/* copy ImageData */
+function copyImageData(src) {
+  return new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+}
+
+/* per-pixel map util (preserves alpha) */
+function mapPixels(imageData, fn) {
+  const out = copyImageData(imageData);
+  const d = out.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
+    const [nr, ng, nb] = fn(r,g,b,a);
+    d[i] = nr; d[i+1] = ng; d[i+2] = nb; d[i+3] = a;
+  }
+  return out;
+}
+
+/* shuffle pixels (permute whole pixel positions) */
+function shufflePixels(imageData, seedStr) {
+  const w = imageData.width, h = imageData.height;
+  const nPixels = w*h;
+  const d = imageData.data;
+  const out = new ImageData(w,h);
+  const outArr = out.data;
+  // create indices 0..nPixels-1 and shuffle with seeded RNG
+  const seed = cyrb128(seedStr || '0');
+  const rng = mulberry32(seed);
+  const indices = new Uint32Array(nPixels);
+  for (let i=0;i<nPixels;i++) indices[i]=i;
+  // fisher-yates shuffle
+  for (let i=nPixels-1;i>0;i--) {
+    const j = Math.floor(rng()*(i+1));
+    const tmp = indices[i]; indices[i]=indices[j]; indices[j]=tmp;
+  }
+  // map pixel p -> indices[p]
+  // If we want deterministic encryption: place source pixel i into target position indices[i]
+  for (let src = 0; src < nPixels; src++) {
+    const tgt = indices[src];
+    const sOff = src*4, tOff = tgt*4;
+    outArr[tOff] = d[sOff];
+    outArr[tOff+1] = d[sOff+1];
+    outArr[tOff+2] = d[sOff+2];
+    outArr[tOff+3] = d[sOff+3];
+  }
+  return out;
+}
+
+/* inverse shuffle: given same seed, compute indices and invert mapping */
+function unshufflePixels(imageData, seedStr) {
+  const w = imageData.width, h = imageData.height;
+  const nPixels = w*h;
+  const d = imageData.data;
+  const out = new ImageData(w,h);
+  const outArr = out.data;
+  const seed = cyrb128(seedStr || '0');
+  const rng = mulberry32(seed);
+  const indices = new Uint32Array(nPixels);
+  for (let i=0;i<nPixels;i++) indices[i]=i;
+  for (let i=nPixels-1;i>0;i--) {
+    const j = Math.floor(rng()*(i+1));
+    const tmp = indices[i]; indices[i]=indices[j]; indices[j]=tmp;
+  }
+  // indices[src] = tgt  => to invert: source pixel was placed into tgt, so to recover original,
+  // take pixel at tgt and move back to src. So compute inverse mapping inv[tgt]=src.
+  const inv = new Uint32Array(nPixels);
+  for (let src=0; src<nPixels; src++) {
+    inv[indices[src]] = src;
+  }
+  for (let tgt=0; tgt<nPixels; tgt++) {
+    const src = inv[tgt];
+    const sOff = tgt*4, tOff = src*4; // because currently pixel at position tgt is the one that belongs to src
+    outArr[tOff] = d[sOff];
+    outArr[tOff+1] = d[sOff+1];
+    outArr[tOff+2] = d[sOff+2];
+    outArr[tOff+3] = d[sOff+3];
+  }
+  return out;
+}
+
+/* swap random pairs of pixels (perform count swaps using seeded RNG) */
+function swapRandomPairs(imageData, seedStr, pairs) {
+  const w = imageData.width, h = imageData.height;
+  const nPixels = w*h;
+  const d = new Uint8ClampedArray(imageData.data); // modify copy
+  const seed = cyrb128(seedStr || '0');
+  const rng = mulberry32(seed);
+  for (let k=0; k<pairs; k++) {
+    const a = Math.floor(rng()*nPixels);
+    const b = Math.floor(rng()*nPixels);
+    if (a===b) continue;
+    const aOff = a*4, bOff = b*4;
+    for (let c=0;c<4;c++){
+      const tmp = d[aOff+c];
+      d[aOff+c] = d[bOff+c];
+      d[bOff+c] = tmp;
+    }
+  }
+  return new ImageData(d, w, h);
+}
+
+/* swap channels */
+function swapChannels(imageData, type) {
+  return mapPixels(imageData, (r,g,b,a) => {
+    if (type==='RG') return [g,r,b];
+    if (type==='RB') return [b,g,r];
+    if (type==='GB') return [r,b,g];
+    if (type==='RGC') return [g,b,r]; // rotation R->G, G->B, B->R (you could choose different)
+    return [r,g,b];
+  });
+}
+
+/* per-channel arithmetic ops: add, multiply, xor, invert */
+function opAdd(imageData, value) {
+  return mapPixels(imageData, (r,g,b,a) => [clamp(r+value), clamp(g+value), clamp(b+value)]);
+}
+function opMultiply(imageData, factor) {
+  return mapPixels(imageData, (r,g,b,a) => [clamp(Math.round(r*factor)), clamp(Math.round(g*factor)), clamp(Math.round(b*factor))]);
+}
+function opXor(imageData, value) {
+  return mapPixels(imageData, (r,g,b,a) => [r ^ value, g ^ value, b ^ value]);
+}
+function opInvert(imageData) {
+  return opXor(imageData, 255);
+}
+
+function clamp(v) {
+  v = Math.round(v);
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return v;
+}
+
+/* Apply & Inverse orchestrators */
+function applyOperation(imageData, params) {
+  const op = params.op;
+  if (op === 'add') return opAdd(imageData, params.value);
+  if (op === 'multiply') return opMultiply(imageData, params.value);
+  if (op === 'xor') return opXor(imageData, params.value);
+  if (op === 'invert') return opInvert(imageData);
+  if (op === 'swapChannels') return swapChannels(imageData, params.channel);
+  if (op === 'shuffle') return shufflePixels(imageData, params.seed);
+  if (op === 'swapRandomPairs') return swapRandomPairs(imageData, params.seed, params.pairs || 1);
+  return imageData;
+}
+function inverseOperation(imageData, params) {
+  const op = params.op;
+  if (op === 'add') return opAdd(imageData, -params.value);
+  if (op === 'multiply') {
+    // To invert multiply, divide by factor. Beware rounding loss.
+    if (params.value === 0) { alert('Cannot invert multiply by 0'); return imageData; }
+    return opMultiply(imageData, 1/params.value);
+  }
+  if (op === 'xor') return opXor(imageData, params.value); // xor is its own inverse
+  if (op === 'invert') return opInvert(imageData);
+  if (op === 'swapChannels') {
+    // reverse channel swap: for pair swaps, repeated same swap recovers original (swap is its own inverse)
+    // for rotation RGC we used [g,b,r] which is a rotation; to invert rotate twice (or rotate other direction)
+    if (params.channel === 'RGC') {
+      // invert rotation by rotating twice (or rotate other way)
+      return mapPixels(imageData, (r,g,b,a) => [b,r,g]);
+    }
+    return swapChannels(imageData, params.channel);
+  }
+  if (op === 'shuffle') return unshufflePixels(imageData, params.seed);
+  if (op === 'swapRandomPairs') {
+    // swapping random pairs is its own inverse ONLY if you perform the same sequence again.
+    // Our implementation is deterministic given seed and count, so applying same function again will undo.
+    return swapRandomPairs(imageData, params.seed, params.pairs || 1);
+  }
+  return imageData;
+}
+
+/* UI: encrypt/decrypt buttons */
+document.getElementById('encryptBtn').addEventListener('click', () => {
+  if (!lastImageData) { alert('Load an image first'); return; }
+  const params = readParamsFromUI();
+  const out = applyOperation(lastImageData, params);
+  ctx.putImageData(out, 0, 0);
+  lastImageData = ctx.getImageData(0,0,canvas.width,canvas.height);
+  currentMode = 'encrypted';
+  updateMeta('encrypted');
+  // store params into exported area for convenience
+  document.getElementById('importJson').value = JSON.stringify(params);
+});
+
+document.getElementById('decryptBtn').addEventListener('click', () => {
+  if (!lastImageData) { alert('Load an image first'); return; }
+  const params = readParamsFromUI();
+  const out = inverseOperation(lastImageData, params);
+  ctx.putImageData(out, 0, 0);
+  lastImageData = ctx.getImageData(0,0,canvas.width,canvas.height);
+  currentMode = 'decrypted';
+  updateMeta('decrypted');
+});
+
+/* Download processed image */
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  if (!lastImageData) { alert('No processed image to download'); return; }
+  const link = document.createElement('a');
+  link.download = 'processed-image.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+/* Export JSON params */
+document.getElementById('exportParams').addEventListener('click', () => {
+  const params = readParamsFromUI();
+  const data = JSON.stringify(params, null, 2);
+  // prompt download
+  const blob = new Blob([data], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'image-cipher-params.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+/* Import JSON */
+document.getElementById('importBtn').addEventListener('click', () => {
+  try {
+    const txt = document.getElementById('importJson').value.trim();
+    if (!txt) { alert('Paste JSON params into the box first'); return; }
+    const params = JSON.parse(txt);
+    applyParamsToUI(params);
+    alert('Params imported — press Apply or Encrypt to use them.');
+  } catch (e) {
+    alert('Invalid JSON: ' + e.message);
+  }
+});
+document.getElementById('applyImportedBtn').addEventListener('click', () => {
+  document.getElementById('importBtn').click();
+  document.getElementById('encryptBtn').click();
+});
+
+/* Helpers to read/apply params */
+function readParamsFromUI() {
+  const op = operationSel.value;
+  const params = { op };
+  if (op === 'add' || op === 'xor') params.value = parseInt(paramValue.value, 10) || 0;
+  if (op === 'multiply') params.value = parseFloat(paramValue.value) || 1;
+  if (op === 'shuffle' || op === 'swapRandomPairs') params.seed = String(paramSeed.value || '0');
+  if (op === 'swapRandomPairs') params.pairs = Math.max(1, parseInt(paramPairs.value,10) || 1);
+  if (op === 'swapChannels') params.channel = paramChannel.value || 'RG';
+  return params;
+}
+function applyParamsToUI(params) {
+  if (!params || !params.op) return;
+  operationSel.value = params.op;
+  onOpChange();
+  if ('value' in params) paramValue.value = params.value;
+  if ('seed' in params) paramSeed.value = params.seed;
+  if ('pairs' in params) paramPairs.value = params.pairs;
+  if ('channel' in params) paramChannel.value = params.channel;
+}
+
+/* import box apply on load */
+document.getElementById('importJson').addEventListener('paste', () => {
+  // no-op but allows user to paste
+});
+
+/* utility meta */
+function updateMeta(mode) {
+  document.getElementById('metaW').textContent = canvas.width;
+  document.getElementById('metaH').textContent = canvas.height;
+  document.getElementById('metaMode').textContent = mode;
+}
+
+/* initialize example on first load */
+window.addEventListener('load', () => {
+  // optional: nothing auto-loaded
+});
+
+/* Notes for user (console guidance) */
+console.info('Image Pixel Cipher ready. Load an image, choose an operation, and press Encrypt/Decrypt. Save params JSON to be able to reverse operations later.');
+</script>
+</body>
+</html>
